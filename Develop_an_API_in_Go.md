@@ -294,14 +294,178 @@ func main() {
 
 
 
+**Creating a database model (or creating a data access layer for out application)
+
+* A note about dependencies in Go projects
+	* Go project structures include a `go.mod` and `go.sum` files.
+	* The `go.mod` file includes a dependency and its exact version being used for that specific project. If you had another code base on your machine within its own Go project structure, that used the same exact dependency but a different version, then that would be Ok as there would be no conflicts since the versioning is outlined in the `go.mod` file. These are akin to Python virtual environments.
+	* It tells exactly what version should be used for `go run` `go test` or `go build` commands.
+	* `go.sum` includes the cryptographic hashes for the packages in `go.mod` that are installed on your system
+	* The `go mod verify` command compares the hash of the installed package to the hash contained within `go.sum` so you can see if the package has been altered in any way.
+	* Someone else can run `go mod download` and they'll get an error if the packages they download mismatch the checksums defined in `go.sum`.
+	* `go mod download`- Download the exact version of package as specified by the `go.mod` file.
+	* `go mod verify` - Verify those packages to ensure they are installed correctly and not altered.
+	* Whenever `go run`, `go test`, `go build` is ran, the exact package version listed in `go.mod` will always be used.
+	* `go mod tidy` will automatically remove packages from `go.mod` and `go.sum` if those packages dont have any references within the codebase.
+
+* As a reminder, the `internal` directory in our application is providing ancillary non-application specific code that can be re-used for other purposes; A data access layer that can be used by other applications can be used here
+
+* **Designing a Database Model
+	* At this stage in our project, we're going to initialize and store DB dependencies like a DB connection pool
+	* This means that we are going to be connecting to and interacting with databases (writing to and reading from)
+	* It would be a good design to isolate and encapsulate the logic for accessing this data.
+	* Hence the database model, or in other words, the data access layer
+	* This should be separate from our main function (outside of dependency initialization) and away from our handler who should be focused on HTTP requests and responses.
+	* We can do this by creating a new module in `interal`: `/internal/models/snippets.go`
+	* Here's the code:
+	
+``````go title:snippets.go
+package models
+
+import (
+    "database/sql"
+    "time"
+)
+
+// Snippet type to hold the data for a single snippet returned by the DB. Its fields match & coorespond to the fields in the DB.
+// Data model that defines the structure of the data being inserted or returned from our DB
+type Snippet struct {
+    ID int
+    Title string
+    Content string
+    Created time.Time
+    Expires time.Time
+}
+
+type SnippetModel struct {
+    DB *sql.DB
+}
+
+
+// A method of the SnippetModel type. This method will insert data into the DB.
+func (m *SnippetModel) Insert(title string, content string, expires int) (int, error) {
+    return 0, nil
+}
+
+// This will return a snippet based on it's ID
+func (m *SnippetModel) Get(id int) (*Snippet, error) {
+    return nil, nil
+}
+
+// Method that will return a list comprised of our defined Snippet types
+func (m *SnippetModel) Latest() ([]*Snippet, error) {
+    return nil, nil
+}
+``````
+
+* We define a new package `models` and import the `sql` package for static typing
+* We also define a `SnippetModel` struct which holds a reference to an `sql.DB` connection pool (the one we instantiate in main) and methods on that type for writing to and reading from the DB.
+* We've also defined a `Snippet` struct which basically represents the keys in our DB table. Think of this as a data model that defines how data should be passed to and from the DB.
+* Within main:
+
+``````go title:main.go
+package main
+
+import (
+    "database/sql"
+    "flag"
+    "log"
+    "net/http"
+    "os"
+    "github.com/liamhoganson/StealthATS/internal/models"
+    _"github.com/go-sql-driver/mysql"
+)
+
+
+// Configuration settings stored in a struct.
+type config struct {
+    addr string
+    staticDir string // Directory containing static assets.
+    dsn string
+}
+
+// Application struct to centralize application dependencies
+type application struct {
+    errorLog *log.Logger
+    infoLog *log.Logger
+    config *config
+    snippets *models.SnippetModel
+}
+
+func main() {
+    var cfg config // Declare cfg variable as an instance of the config struct.
+    flag.StringVar(&cfg.addr, "addr", ":4000", "HTTP Network Address")// Use flag.StringVar to parse the command line flag into the memory address of cfg.addr.
+    flag.StringVar(&cfg.staticDir, "static_dir", "./ui/static", "Relative file path for static content.")
+    flag.StringVar(&cfg.dsn, "dsn", "web:web@unix(/var/lib/mysql/mysql.sock)/snippetbox?parseTime=true", "MySQL connection string")
+    flag.Parse() // Run flag.Parse method to actually parse the CLI args.
+
+    // Loggers
+    infoLog := log.New(os.Stdout, "INFO\t", log.Ldate|log.Ltime)
+    errorLog := log.New(os.Stderr, "ERROR\t", log.Ldate|log.Ltime|log.Llongfile)
+
+    // Setup DB connection pool
+    db, err := openDB(cfg.dsn)
+    if err != nil {
+        errorLog.Fatal(err)
+    }
+    defer db.Close()
+
+    // Store application dependencies
+    app := application{
+        errorLog: errorLog,
+        infoLog: infoLog,
+        config: &cfg,
+        snippets: &models.SnippetModel{DB: db},
+    }
+
+    srv := &http.Server{
+        Addr: cfg.addr,
+        ErrorLog: errorLog,
+        Handler: app.routes(),
+    }
+
+    infoLog.Printf("Starting server on http://localhost%s", cfg.addr)
+    err = srv.ListenAndServe()
+    errorLog.Fatal(err)
+}
+
+// Wrapper function around sql.Open() and returns a DB connection pool
+func openDB(dsn string) (*sql.DB, error) {
+    db, err := sql.Open("mysql", dsn)
+    if err != nil {
+        return nil, err
+    }
+    if err = db.Ping(); err != nil {
+        return nil, err
+    }
+    return db, nil
+}
+``````
+
+* Here we've added a snippets field to our application dependencies struct which is of type `*models.SnippetModel` (The struct we've defined which holds our data access methods)
+* We've also imported our `internal/models/snippets.go` module
+* We instantiate our dependencies including the DB connection pool by calling `openDB`
+* And we instantiate the the application struct dependency object and store it in the `app` variable. 
+* Within that we've instantiated the `SnippetModel` struct in the snippets field within `app`: `snippets: &models.SnippetModel{DB: db}`
+* Our handlers have access to the `SnippetModel` data access methods via dependency injection (injecting in that object to our application object) and can call any method on `snippets`
+* And the data access methods have access to the DB connection pool through dependency injection as well via the `DB` field within `SnippetModel` object.
+* And `Snippet`
+* Because the data access code is defined as methods on an object, we can create an interface and mock a `SnippetModel` object for unit testing purposes.
+* Side Note: An interface in Go can define multiple method signatures.
+
+* **Benefits of this approach:
+	* There's a clean separation of concerns with this design. Our data access layer isn't concerned with our HTTP handlers and business logic layer. 
+	* Our HTTP handlers dont need to write any actual data access layer code themselves. Instead, we use dependency injection to pass in the the `SnippetModel` object and its associated methods into the application object and it's methods which are our handlers.
+	* 
 
 
 
 
-# General Go notes
+
+# General Go & HTTP Notes
 * The internal directory:
 	* The directory name `internal` carries a special meaning in Go. Any packages that live under this directory can only be imported by code inside the parent of the `internal` directory which in our case is the project root dir. Or in other words, packages in `internal` cannot be imported by code outside of our project.
 	* ^ This prevents other codebases that aren't our own from importing and relying on the packages in our internal directory.
 	* http.StripPrefix is a middleware wrapper that strips the given string out of the request URL and returns a handler for the updatedd (stripped) request.
 	* HEAD request is an HTTP method that acts as a standard HTTP GET method but only returns the headers and not the body. Useful for large files. Like getting the Content-Length header and Content-Type header in order.
-	* An Accept-Rangers header indicates that a client is able to perform partial requests on a particular resource. That is, they are able to request ranges of bytes out of a total of a resource.
+	* An Accept-Ranges header indicates that a client is able to perform partial requests on a particular resource. That is, they are able to request ranges of bytes out of a total of a resource.
