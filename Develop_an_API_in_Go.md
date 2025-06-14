@@ -1,6 +1,5 @@
 
 ## Net/http Library basics
-
 * net/http library allows you to build a basic web API in Go.
 * It provides a servemux which is essentially a router or a request forwarder.
 * `servemux.HandleFunc` routes request URL patterns to Go functions that execute the actual application logic. These functions are called handlers.
@@ -10,38 +9,35 @@
 * `http.NewServeMux()` allows you to instantiate a new serve mux object.
 * `http.ListenAndServe(port str, servemux ServeMux)` method starts the web server and listens for incoming requests.
 
-
-
-
-## Requests
+**Requests**
 * `r.URL.Get(query_param str)` allows you to fetch URL query parameters from the request object.
 
 # Responses
 * ##TODO Write about http.Error() shortcut
 
 
-**The http.Handler Interface & ServeHTTP method
+**The `http.Handler` Interface & `ServeHTTP` method
 
 * In Go's net/http library a handler is what our multiplexer maps URL patterns to.
 * If the multiplexer receives an incoming request which URL pattern matches a HandleFunc string, it'll call the handler function thats associated to that. 
 * But what's a handler?
 * A handler is an object which satisfies the `http.Handler` interface:
-* ```
-```
+*```
+``````go
 type Handler interface {
 	ServeHTTP(ResponseWriter, *Request)
 }
-```
+``````
 
 * For an object to be a handler, it must have a `ServeHTTP()` method with that exact signature.
 
-```
+``````go
 type home struct {}
 
 func (h *home) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("This is my homepage"))
 }
-```
+``````
 
 * You can write your handlers as structs with methods attached that implement `ServeHTTP()` method within them like in the example above
 * But its long winded to create an object just to implement the `ServeHTTP()` method which is why we just use standalone functions generally.
@@ -62,14 +58,14 @@ func (h *home) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 * If our handlers and dependencies share the same package we can create a `struct` that contains all of our dependency objects (for example) handlers and then turn our handler functions into methods of that struct.
 * For example:
 
-```
+``````go
 package main
 
 type application struct {
 	errorLog *log.Logger
 	infoLog *log.Logger
 }
-```
+``````
 
 And then:
 ```
@@ -82,30 +78,29 @@ func (app *application) exampleHandler(w http.ResponseWriter, r *http.Request) {
 * But what if the handlers are in one package and the application structure is in another? We can use closures to handle this.
 * The high overview is that when our application structure exists in one package and our handlers in another, we can no longer attach our handler function as methods to the application structure because we cant create methods on a structure that exists in another package. For reference that would look like this (which wont work):
 
-```
+``````go
 package config
 
 type Env struct {
 	errorLog *log.Logger
 	infoLog *log.Logger
 }
-```
+``````
 
-```
+``````go 
 package handlers
 
 func (env config.Env) exampleHandler(w http.ResponseWriter, r *http.Request){
 	env.infoLog("Hello world")
 }
-```
+``````
 
 * This wont work because we cant access `config.Env` and make a method out of the handler like that.
 * So what do we do?
 * We can make separate packages between our handlers, config, and main packages and use closures in order to pass in the config struct and save the context.
 * Here's the example:
 
-loggers.go
-```
+``````go title:loggers.go
 package config
 
 import "fmt"
@@ -131,10 +126,9 @@ func (l *consoleLogger) Log(message string) {
 func NewConsoleLogger() *consoleLogger {
 	return &consoleLogger{}
 }
-```
+``````
 
-handlers.go
-```
+``````go title:handlers.go
 package handlers
 
 import (
@@ -154,10 +148,9 @@ func ExampleHandler(env *config.Env) http.Handler {
 		return
 	}
 }
-```
+``````
 
-main.go
-```
+``````go title:main.go
 package main
 
 import (
@@ -174,17 +167,17 @@ func main() {
 	// Call the exampleHandler handler and pass in the env struct object.
 	http.Handle("/", handlers.ExampleHandler(env))
 }
-```
+``````
 
 * Essentially closures allow you to capture the env variable cross package boundaries and pass it into handlers.
-
 
 **Centralized Error Handling
 
 * A good practice would be to add helper methods into their own module responsible error handling common errors such as `500 Internal Server Error`'s
 * This separates concerns by isolating and centralizing error handling logic within it's own module and not mixing that logic anywhere else like in the handlers themselves over and over or in the main function.
 
-```
+
+``````go title:helpers.go
 package main
 import (
 "fmt"
@@ -211,16 +204,13 @@ func (app *application) clientError(w http.ResponseWriter, status int) {
 func (app *application) notFound(w http.ResponseWriter) {
 	app.clientError(w, http.StatusNotFound)
 }
-```
-
+``````
 
 **Isolating and Encapsulating the routes
 
-* Another good refactor in order to seperate out our concerns and promote isolation and encapsulation between our logic and module responsibilities would be to isolate our routes (currently defined in `main()`) into their own module.
+* Another good refactor in order to separate out our concerns and promote isolation and encapsulation between our logic and module responsibilities would be to isolate our routes (currently defined in `main()`) into their own module:
 
-```
-cdm/web/routes.go
---------------------
+``````go title:routes.go
 
 package main
 
@@ -242,14 +232,11 @@ func (app *application) routes() *http.ServeMux {
 	return mux
 
 }
-```
+``````
 
-```
-cmd/web/main.go
------------------
 
+``````go title:main.go
 package main
-...
 
 func main() {
 	addr := flag.String("addr", ":4000", "HTTP network address")
@@ -276,7 +263,7 @@ func main() {
 	errorLog.Fatal(err)
 }
 
-```
+``````
 
 * Now our main function is only responsible for parsing the runtime configuration parameters, creating the dependencies for the handlers and running the HTTP server.
 * Routes are encapsulated in their own module and concerns are separated.
@@ -551,7 +538,7 @@ func main() {
 	 * We're also using the same placeholder pattern as before and sending the query and the data separate, making this a prepared statement.
 	* Here's the full updated code for `snippets.go`:
 
-		``````go title:snippets.go
+``````go title:snippets.go
 // This will return a snippet based on it's ID
 func (m *SnippetModel) Get(id int) (*Snippet, error) {
     // This method's prepared statement
@@ -621,7 +608,7 @@ func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
 		* The `defer` statement is a list of function calls to be executed *after* the surrounding function returns.
 		* For example, take this code snippet:
 
-	``````go title:defer_example.go
+		``````go title:defer_example.go
 func copyFile(dstName, srcName string) (written int64, error) {
 	src, err := os.Open(srcName)
 	if err != nil {
@@ -666,3 +653,38 @@ func copyFile(dstName, srcName string) (written int64, error) {
 }
 ``````
 
+* Now let's examine what's happening in the above example.
+* If there's an error when opening `src`, the `copyFile` function will return and `src.Close()` will be called since it's the only function call in the defer list.
+* Now let's assume, it opens `src` successfully but it fails to create `dest` . In the last example, the `src.Close()` and `dest.Close()` happened after the function returned in the case that `err != nil`. 
+* In this example, if `dest` fails to materialize, the `copyFile()` function exits (just like before) except now `dest.Close()` is executed and then `src.Close()` is executed next. Closing all the opened resources.
+* The key thing with defer here is its useful for resource management and cleanup actions. 
+* Another point worth noting is that deferred calls are executed in a *Last-In-First-Out* (LIFO) fashion. Meaning, the last defer statement evaluated is the first to be executed in the list. In the example above, `dest.Close()` is executed before `src.Close()`.
+* Another point is that arguments passed into the `defer` function are evaluated as their state as they are passed into the defer call. For example:
+
+``````go title:defer_example_three.go
+package main
+
+import "fmt"
+
+func a() {
+	i := 5
+	defer fmt.Printf("\nThe deferred number is: %d", i)
+	i++
+	fmt.Printf("The number within the stack call is still: %d", i)
+	return
+}
+
+func main() {
+	a()
+}
+``````
+
+* In this example, we pass the variable `i` into the deferred `Printf` function call and then immediately change it's value by incrementing it by 1.
+* The output will be:
+```
+The number within the stack call is: 6
+The deferred number is still: 5
+```
+* The stack executes in it's entirety and is returned and then the deferred `Printf` function call is called. 
+* However, the value of `i` at time of passing it into the deferred `Printf` is `5`. Meaning that's what it will print AFTER function `a` executes.
+* Function `a` will print `6` because we changed the value of `i` after deferring it.
