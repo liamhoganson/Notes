@@ -607,8 +607,7 @@ func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
 	* Let's stop and take a moment to discuss the `defer` keyword in Go.
 	* The `defer` statement is a list of function calls to be executed *after* the surrounding function returns.
 	* For example, take this code snippet:
-
-	``````go title:defer_example.go
+``````go title:defer_example.go
 func copyFile(dstName, srcName string) (written int64, error) {
 	src, err := os.Open(srcName)
 	if err != nil {
@@ -625,7 +624,7 @@ func copyFile(dstName, srcName string) (written int64, error) {
 	src.Close()
 	return
 }
-	``````
+``````
 
 * This code works but there's a bug within it. 
 * First, if it cant open `src`, it will return out of this function stack
