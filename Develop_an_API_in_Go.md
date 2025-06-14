@@ -456,16 +456,213 @@ func openDB(dsn string) (*sql.DB, error) {
 * **Benefits of this approach:
 	* There's a clean separation of concerns with this design. Our data access layer isn't concerned with our HTTP handlers and business logic layer. 
 	* Our HTTP handlers dont need to write any actual data access layer code themselves. Instead, we use dependency injection to pass in the the `SnippetModel` object and its associated methods into the application object and it's methods which are our handlers.
-	* 
+
+* **Section 4.6: Executing SQL Statements
+* Go's `sql.DB` provides the following methods among others:
+	* `DB.Query()` is used for SQL `SELECT` queries which return multiple rows
+	* `DB.QueryRow()` is used for SQL `SELECT` queries which return a single row
+	* `DB.Query()` is used for are used for statements that don't return data (usually used for mutation statements like `INSERT` and `DELETE`)
+* We'll update the `SnippetModel.Insert()` method to the following:
+
+``````go title:main.go
+// A method of the SnippetModel type. This method will insert data into the DB.
+func (m *SnippetModel) Insert(title string, content string, expires int) (int, error) {
+    // We can split the statement into multi-line string using back ticks instead of quoutes.
+    stmt := `INSERT INTO snippets (title, content, created, expires)
+    VALUES(?, ?, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY))`
+
+    // Here we are using the embedded DB connection pool object from `SnippetModel`'s DB field and calling the `Exec` method
+    // The first parameter to this method is the SQL statement we defined above, followed by the title, content, and expiry 
+    // values. This method returns an sql.Result type, which contains infomration about the execution itself.
+    result, err := m.DB.Exec(stmt, title, content, expires)
+    if err != nil {
+        return 0, err
+    }
+}
+``````
+
+* `sql.Exec()` method returns a `Result` type which is an interface that contains two methods:
+	* `LastInsertID()` - This will return an integer value which should the row we've just added ID value. This is usually done by a DB's auto increment feature. Not supported by all DB's. 
+	* `RowsAffected()` -  Again, not every DB will support this method, but this returns an integer value which represents the number of rows affected by a `INSERT`, `UPDATE` or `DELETE` statement.
+* It's also common practice to ignore the return value of `sql.Exec()` like so: `_, err := m.DB.Exec(stmt, title, content, expires)`
+* SQL Prepared Statements:
+	* The above SQL query statement is what's called a prepared statement.
+	* The first part of the snippet: `INSERT INTO snippets (title, content, created, expires)` is a standard INSERT statement 
+	* The second part: `VALUES(?, ?, UTC_TIMESTAMP(), DATE_ADD(UTC_TIMESTAMP(), INTERVAL ? DAY)`
+	* Is a section wherein placeholder values are formatted into the entire statement. The `?` values are placeholder values which get populated with the data from our application we send to the DB.
+	* The entire statement is pre-compiled and stored on the DB which is good for us because statements like this are commonly used by our application to interact with the DB. By having the DB store it, it saves resources because it wont need to recompile it each time.
+	* The statement is pre-compiled and parsed and the given values to replace our placeholders are sent separately which also helps prevent SQL injection attacks.
+	* It helps preventing SQL attacks because the prepared statement is an SQL query that's *pre-compiled.* Meaning, the SQL code itself is parsed and the machine code derived from it on the DB itself, any data following the query to over-ride the placeholder fields will not be interpreted as SQL code EVEN if it's textually SQL code. For example, let's compare using a standard query from our application via string formatting that is NOT a prepared statement:
+	
+``````go title:main.go
+package main
+import "fmt"
+
+func main() {
+	data := 1
+	sql_query = fmt.Sprintf(`SELECT * FROM users WHERE id=%d;`, data) 
+}
+`````` 
+
+* The above code has a huge security vulnerability: When the string is formatted it returns: `SELECT * FROM users WHERE id=1` 
+* That's fine for that specific variable (1), but there's a potential (especially when dealing with user input) that data is valid SQL code like so:
+
+``````go title:main.go
+package main
+import "fmt"
+
+func main() {
+	data := '1; DROP table users;'
+	sql_query = fmt.Sprintf(`SELECT * FROM users WHERE id=%d;`, data) 
+}
+``````
+
+* Now that SQL query becomes: `SELECT * FROM users WHERE id=1; DROP TABLE users;`
+* That query statement is what gets sent to the Database and our DB will interpret that as valid SQL code and execute it. That will delete the entire `users` table from our DB. This is an example of SQL injection.
+* Whereas with a prepared statement: We define a prepared statement which is the valid SQL code we define and that gets sent to the DB in a single request, the DB compiles and stores that code and is prepared to execute that SQL statement with populated values sent in from an additional request. 
+* Now this time:
+
+``````go title:main.go
+package main
+import "fmt"
+
+func main() {
+	data := '1; DROP table users;'
+	sql_query = (`SELECT * FROM users WHERE id=?;`) 
+}
+``````
+
+* When this statement is sent to the DB as a prepared statement, the DB interprets the statement and stores it
+* Next, the data `1; DROP table users;` gets sent and the DB uses that data for the placeholder value. 
+* This will just result in an error now because its literally interpreting the id field as `1; DROP table users;` which is not a valid field.
+* It knows not to parse `1; DROP table users;` and treat it just as textual data without compiling it and executing its instructions.
+* The SQL statement and raw data are sent separately. So long as the original statement isn't  derived from an un-trusted source, injection cannot occur.
 
 
+* **4.7 Single-Record SQL Queries
+	* We'll run the following SQL query on the database in order to retrieve a single record based on it's ID:
+	
+	``````go title:snippets.go
+	SELECT id, title, content, created, expires FROM snippets
+	WHERE expires > UTC_TIMESTAMP() AND id = ?
+	``````
 
+	 * This query will return a snippet based off it's primary key (ID) and only if it's not already expired. If it doesnt exist, it will return nothing.
+	 * We're also using the same placeholder pattern as before and sending the query and the data separate, making this a prepared statement.
+	* Here's the full updated code for `snippets.go`:
 
+		``````go title:snippets.go
+// This will return a snippet based on it's ID
+func (m *SnippetModel) Get(id int) (*Snippet, error) {
+    // This method's prepared statement
+    stmt := `SELECT id, title, content, created, expires FROM snippets
+             WHERE expires > UTC_TIMESTAMP() AND id = ?`
 
-# General Go & HTTP Notes
-* The internal directory:
-	* The directory name `internal` carries a special meaning in Go. Any packages that live under this directory can only be imported by code inside the parent of the `internal` directory which in our case is the project root dir. Or in other words, packages in `internal` cannot be imported by code outside of our project.
-	* ^ This prevents other codebases that aren't our own from importing and relying on the packages in our internal directory.
-	* http.StripPrefix is a middleware wrapper that strips the given string out of the request URL and returns a handler for the updatedd (stripped) request.
-	* HEAD request is an HTTP method that acts as a standard HTTP GET method but only returns the headers and not the body. Useful for large files. Like getting the Content-Length header and Content-Type header in order.
-	* An Accept-Ranges header indicates that a client is able to perform partial requests on a particular resource. That is, they are able to request ranges of bytes out of a total of a resource.
+    // Use the QueryRow() method on our connection pool object and pass in the untrusted id parameter value
+    // as the value to our placeholder value. This returns an sql.Row object.
+    row := m.DB.QueryRow(stmt, id)
+
+    // Initialize a zeroed Snippet struct.
+    s := &Snippet{}
+
+    // Use row.Scan() method to copy the values from each field in sql.Row into the cooresponding field 
+    // in the Snippet struct. The args to row.Scan() are pointers to the place you want to copy the data into.
+    // This populates our zeroed Snippet struct in place.
+    err := row.Scan(&s.ID, &s.Title, &s.Content, &s.Created, &s.Expires)
+
+    // If the query returns 0 rows, then row.Scan() will return a sql.ErrNoRows error.
+    // We use the errors.Is() method to check if thats the error specifically, and return our own ErrNoRecord error instead.
+    if err != nil {
+        if errors.Is(err, sql.ErrNoRows) {
+            return nil, ErrNoRecord
+        } else {
+            return nil, err
+        }
+    }
+
+    // Return the new snippet object
+    return s, nil
+}
+``````
+
+* Code overview:
+	* Behind the scenes, the `row.Scan()` method will convert the data types that `row` has stored as column values into native Go types.
+	* Here's the `snippetView` method:
+
+``````go title:handlers.go
+func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
+    id, err := strconv.Atoi(r.URL.Query().Get("id"))
+    if err != nil || id < 1 {
+        app.notFound(w)
+        return
+    }
+    snippet, err := app.snippets.Get(id)
+    if err != nil {
+        if errors.Is(err, models.ErrNoRecord) {
+            app.notFound(w)
+        } else {
+            app.serverError(w, err)
+        }
+        return 
+    }
+
+    fmt.Fprintf(w, "%+v", snippet)
+}
+``````
+
+* Code overview:
+	* Here we grab the ID parameter from the URL and check if it exists and its value is greater than 0.
+	* We then call `app.snippets.Get(id)` and store the result in `snippet` which should be the resulting `Snippet` struct.
+	* We then write the snippet data as a plain text HTTP response
+	* As well as error handling.
+
+	* The `defer` statement:
+		* Let's stop and take a moment to discuss the `defer` keyword in Go.
+		* The `defer` statement is a list of function calls to be executed *after* the surrounding function returns.
+		* For example, take this code snippet:
+
+	``````go title:defer_example.go
+func copyFile(dstName, srcName string) (written int64, error) {
+	src, err := os.Open(srcName)
+	if err != nil {
+		return
+	}
+	
+	dest, err := os.Create(dstName)
+	if err != nil {
+		return
+	}
+	
+	written, err = io.Copy(dst, src)
+	dest.Close()
+	src.Close()
+	return
+}
+``````
+
+	* This code works but there's a bug within it. 
+	* First, if it cant open `src`, it will return out of this function stack
+	* That's fine because we haven't opened any other resource (including `src`)
+	* But if it cant create `dest`, and it returns out of the stack, `src` is already opened and that resource is already allocated in the heap as it returns before it calls `src.Close()`
+	* This is a resource leak.
+	* We can use the `defer` statement to ensure `src.Close()` and `dest.Close()` get called *after* `copyFile` returns at any point:
+
+	``````go title:defer_example_two.go
+func copyFile(dstName, srcName string) (written int64, error) {
+	src, err := os.Open(srcName)
+	if err != nil {
+		return
+	}
+	defer src.Close()
+	
+	dest, err := os.Create(dstName)
+	if err != nil {
+		return
+	}
+	defer dest.Close()
+	
+	written, err = io.Copy(dst, src)
+	return written
+}
+``````
+
