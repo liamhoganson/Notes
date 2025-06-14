@@ -633,7 +633,7 @@ func copyFile(dstName, srcName string) (written int64, error) {
 * This is a resource leak.
 * We can use the `defer` statement to ensure `src.Close()` and `dest.Close()` get called *after* `copyFile` returns at any point:
 
-	``````go title:defer_example_two.go
+``````go title:defer_example_two.go
 func copyFile(dstName, srcName string) (written int64, error) {
 	src, err := os.Open(srcName)
 	if err != nil {
