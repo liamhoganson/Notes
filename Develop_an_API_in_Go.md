@@ -603,12 +603,12 @@ func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
 	* We then write the snippet data as a plain text HTTP response
 	* As well as error handling.
 
-	* The `defer` statement:
-		* Let's stop and take a moment to discuss the `defer` keyword in Go.
-		* The `defer` statement is a list of function calls to be executed *after* the surrounding function returns.
-		* For example, take this code snippet:
+* **The `defer` statement:**
+	* Let's stop and take a moment to discuss the `defer` keyword in Go.
+	* The `defer` statement is a list of function calls to be executed *after* the surrounding function returns.
+	* For example, take this code snippet:
 
-		``````go title:defer_example.go
+``````go title:defer_example.go
 func copyFile(dstName, srcName string) (written int64, error) {
 	src, err := os.Open(srcName)
 	if err != nil {
@@ -627,12 +627,12 @@ func copyFile(dstName, srcName string) (written int64, error) {
 }
 ``````
 
-	* This code works but there's a bug within it. 
-	* First, if it cant open `src`, it will return out of this function stack
-	* That's fine because we haven't opened any other resource (including `src`)
-	* But if it cant create `dest`, and it returns out of the stack, `src` is already opened and that resource is already allocated in the heap as it returns before it calls `src.Close()`
-	* This is a resource leak.
-	* We can use the `defer` statement to ensure `src.Close()` and `dest.Close()` get called *after* `copyFile` returns at any point:
+* This code works but there's a bug within it. 
+* First, if it cant open `src`, it will return out of this function stack
+* That's fine because we haven't opened any other resource (including `src`)
+* But if it cant create `dest`, and it returns out of the stack, `src` is already opened and that resource is already allocated in the heap as it returns before it calls `src.Close()`
+* This is a resource leak.
+* We can use the `defer` statement to ensure `src.Close()` and `dest.Close()` get called *after* `copyFile` returns at any point:
 
 	``````go title:defer_example_two.go
 func copyFile(dstName, srcName string) (written int64, error) {
@@ -681,10 +681,12 @@ func main() {
 
 * In this example, we pass the variable `i` into the deferred `Printf` function call and then immediately change it's value by incrementing it by 1.
 * The output will be:
+
 ```
 The number within the stack call is: 6
 The deferred number is still: 5
 ```
+
 * The stack executes in it's entirety and is returned and then the deferred `Printf` function call is called. 
 * However, the value of `i` at time of passing it into the deferred `Printf` is `5`. Meaning that's what it will print AFTER function `a` executes.
 * Function `a` will print `6` because we changed the value of `i` after deferring it.
