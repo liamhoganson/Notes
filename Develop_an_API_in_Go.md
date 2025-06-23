@@ -689,3 +689,314 @@ The deferred number is still: 5
 * The stack executes in it's entirety and is returned and then the deferred `Printf` function call is called. 
 * However, the value of `i` at time of passing it into the deferred `Printf` is `5`. Meaning that's what it will print AFTER function `a` executes.
 * Function `a` will print `6` because we changed the value of `i` after deferring it.
+
+**4.8 Multi-Record SQL Queries
+* We'll use the following query within the `snippets.Latest()` method to retrieve the last 10 snippets inserted into the DB table so long as they're not expired:
+```
+SELECT id, title, content, created, expires FROM snippets
+WHERE expires > UTC_TIMESTAMP() ORDER BY id DESC LIMIT 10
+```
+
+* Here's the full code:
+``````go title:snippets.go
+// Method that will return a list comprised of our defined Snippet types
+func (m *SnippetModel) Latest() ([]*Snippet, error) {
+    stmt := `SELECT id, title, content, created, expires FROM snippets
+             WHERE expires > UTC_TIMESTAMP() ORDER BY id DESC LIMIT 10`
+
+    // This returns a sql.Rows resultset containing the result of our query.
+    rows, err := m.DB.Query(stmt)
+    if err != nil {
+        return nil, err
+    }
+
+    // Defer closing the underlying connection
+    defer rows.Close()
+
+    snippets := []*Snippet{}
+
+    for rows.Next() {
+        s := &Snippet{}
+        err = rows.Scan(&s.ID, &s.Title, &s.Content, &s.Created, &s.Expires)
+        if err != nil {
+            return nil, err
+        }
+        snippets = append(snippets, s)
+    }
+    if err = rows.Err(); err != nil {
+        return nil, err
+    }
+    return snippets, nil
+}
+``````
+
+* Code overview:
+	* In this code, we're using the `Query()` method on the connection pool object to execute the SQL statement. This returns a `sql.Rows` result set containing the results of our query stored in the variable `rows`
+	* We then defer the `rows.Close()` call to ensure the underlying DB connection always gets closed regardless of where the function returns or errors.
+	* We initialize an empty slice of `Snippet` objects.
+	* Next we call `rows.Next()` method on the `*Rows` object on a for loop definition so we can use `row.Scan()` method on each result from the result set. From the docs: `Next()` prepares the next result row for reading with the `Rows.Scan()` method.
+	* `roes.Next()` returns true if there is a next row or false if either there are no more rows to return OR it encountered an error.
+	* After the loop we define: `if err := rows.Error(); err != nil` to check if at any point `rows.Next()` returned false was because of an error or just because it reached the end of the loop.
+	* Within the loop, we are iterating over the results in the result set thanks to `rows.Next()` and using `rows.Scan()` to write the row column data values to our instantiated `&Snippet` pointer object. 
+	* We instantiate one of these in each iteration and append the written object to the `snippets` slice we instantiated outside of the loop.
+	* Once the loop has completed and we've determined there are no errors, we return the populated `snippets` slice.
+	* `*Row.Scan()` method copies the values from each field in the row (each column value) to some place in memory that we specify. The arguments must be pointers to a place in memory (IN our case, we are passing in pointers to the fields in the `&Snippet` struct we instantiated and stored in `s`) AND the number of arguments passed in MUST match the number of columns in each row.
+
+**Section 4.9 Transactions and other details
+* The `database/sql` package
+	* This is the package we've been using for interacting with our SQL database.
+	* It provides a standard interface between our Go app and SQL databases.
+	* It should generally work with other SQL databases like PostgreSQL and SQLite
+* Working with Transactions
+	* All the methods that come with `database/sql`for interacting with our DB can use any connection from the `sql.DB` connection pool EVEN if you have two calls to `Exec()` (Manipulating DB data) immediately next to each other.
+	* There is no guarantee those two calls will use the same underlying DB connection from the `sql.DB` connection pool.
+	* This doesn't work if you lock a table with a `LOCK TABLES` statement query because you must call `UNLOCK TABLES` on the same underlying DB connection that locked the table in order to avoid a deadlock.
+	* In order to guarantee that the same underlying DB connection be used, you can wrap multiple SQL statements in a transaction.
+	* You can run those same DB methods on a transaction object instead of a DB connection pool object. 
+	* Here's an example code snippet describing the pattern:
+
+``````go title:example_transaction.go
+type ExampleModel struct {
+	DB * sql.DB
+}
+
+func (m *ExampleModel) ExampleTransaction() error {
+	// Calling Begin() on the DB connection pool creates a new sql.Tx
+	// Object, which represents the in-progress database transaction.
+	// gets stored in the tx var
+	tx, err := m.DB.Begin()
+	if err != nil {
+		return err
+	}
+
+		// Defer a call to tx.Rollback() to ensure it is always called
+		// before the function returns. If the transaction succeeds
+		// it will lready be committed by the time tx.Rollback()
+		// is called. Otherwise, in the event of an error, tx.Rollback()
+		// will rollback the changes before the function returns
+		// This makes the function idempotent. Either all changes 
+		// succeed or none of them.
+	defer tx.Rollback()
+
+	_, err = tx.Exec(`INSERT INTO ...`)
+	if err != nil {
+		return err
+	}
+
+	// Carry out another transaction in exctly the same way
+	// This is called on the same underlying connection as the last 
+	// Exec() method.
+	_, err = tx.Exec(`UPDTE ...`)
+	if err != nil {
+		return err
+	}
+
+	// If no errors, the statements in the transaction can be committed
+	// to the database with the tx.Commit() method.
+	err = tx.Commit()
+	return err
+}
+``````
+
+* You must always call either `Rollback()` or `Committ()` on the transaction object before the function returns. If you dont, the underlying connection will remain open and not be returned to the connection pool. This can easily lead to hitting your maximum connection limit and running out of connections from your connection pool and resources.
+* Always defer a call to `tx.Rollback()` like we are in the above example.
+* As mentioned previously, transactions are helpful if you want to execute multiple SQL statements as a single atomic action. So long as you defer a call to `tx.Rollback()` in the event of a failure or errors, the transaction ensures that ALL statements succeed or NONE of the statements succeed.
+* IE database transaction objects allow for idempotency.
+* In summary, a `Tx` object ensures multiple statements are executed on the same underlying connection.
+
+* Prepared Statements
+	* As described earlier, every one of our DB queries produces prepared statements that get stored on the DB pool underlying connections, then our parameters get passed in, the statement executes, then the prepared statement is torn down on the DB. (Parameters are not interpolated when using prepared statements.)
+	* This happens every single time.
+	* This is problematic for very large queries (IE multiple JOIN statements) and a large connection request is occurring (IE bulk inserting thousands of records into the DB.)
+	* If we call that statement multiple times in our application, that can have a negative impact on the runtime performance.
+		* We can instead, create our own prepared statement using the `sql.DB.Prepare()` method which returns an `sql.Stmt` object which represents the prepared statement.
+		* This can be done on a transaction object as well but the stmt object produced will only last the duration of the transaction object. (IE trying to use the statement after calling `Tx.Close()` would produce an error.) 
+		* Here's an example of using our own prepared statements on the `sql.DB` connection pool object:
+
+``````go title:example_custom_prepared_stmt.go
+type ExampleModel struct {
+	DB *sql.DB
+	InsertStmt *sql.Stmt
+}
+
+// Constructor function that returns an instantiated ExampleModel object
+func NewExampleModel(db *sql.DB) (*ExampleModel, error) {
+
+	// Define the prepared statement
+	insertStmt, err := db.Prepare(`INSERT INTO ...`)
+	if err != nil {
+		return nil, err
+	}
+
+	// Store it in the ExampleModel object along w/ the connection pool
+	return &ExampleModel{db, insertStmt}, nil
+}
+
+// Any methods implemented against the ExampleModel object will have
+// access to the prepared statement (and the connection pool).
+func (m *ExampleModel) Insert(args...) error {
+
+	// We call Exec() here on the prepared statement instead of the DB pool
+	// We can also call Query() and QueryRow() on the statement.
+	_, err := m.InsertStmt.Exec(args...)
+	return err
+}
+
+func main() {
+	db, err sql.Open(...)
+	if err != nil {
+		errorLog.Fatal(err)
+	}
+	defer db.Close()
+
+	exampleModel, err := NewExampleModel(db)
+	if err != nil {
+		errorLog.Fatal(err)
+	}
+
+	defer exampleModel.InsertStmt.Close()
+}
+``````
+
+
+# 5. Dynamic HTML Templates
+
+* What we'll learn:
+	* This section focuses on displaying dynamic data that we fetch from the database and injecting it into our HTML templates.
+	* Pass dynamic data into HTML templates using Go's `html/template` package to control the display of dynamic data
+	* Create a template cache so that templates aren't being loaded from disk for each HTTP request.
+	* Handle template rendering errors.
+	* Create custom functions to format and display dynamic data in the HTML pages.
+
+* **Displaying Dynamic Data
+	* Currently, the `snippetView` handler function fetches a populated `models.Snippet` object from the database given an ID that it grabs from the URL query parameters and dumps the contents in a plain-text HTTP response.
+	* Here's the updated `snippetView` handler:
+
+	``````go title:handlers.go
+func (app *application) snippetView(w http.ResponseWriter, r *http.Request) {
+    id, err := strconv.Atoi(r.URL.Query().Get("id"))
+    if err != nil || id < 1 {
+        app.notFound(w)
+        return
+    }
+    snippet, err := app.snippets.Get(id)
+    if err != nil {
+        if errors.Is(err, models.ErrNoRecord) {
+            app.notFound(w)
+        } else {
+            app.serverError(w, err)
+        }
+        return 
+    }
+
+    files := []string{
+        "./ui/html/base.html",
+        "./ui/html/partials/nav.html",
+        "./ui/html/pages/view.html",
+    }
+
+    ts, err := template.ParseFiles(files...)
+    if err != nil {
+        app.serverError(w, err)
+        return
+    }
+
+    data := &templateData{
+        Snippet: snippet,
+    }
+
+    err = ts.ExecuteTemplate(w, "base", data)
+    if err != nil {
+        app.serverError(w, err)
+    }
+}
+``````
+
+	* Next we need to create a new template page for our `snippet/view/` endpoint.
+	* But first, lets explain how dynamic data is passed in and accessed in the HTML templates:
+		* Within the HTML templates, any dynamic data that you pass in is represented by a dot. Literally a `.` character.
+		* In this specific template, the underlying type of data (or the data that `.` represents) will be a `models.Snippet` struct.
+		* When the underlying type of dot is a struct, you can render or yield the value of any field of the struct in the HTML templates by post-fixing dot with the field name.
+		* For example, our `modles.Snippet` struct has a field `Title` so we can pass in the struct to our template and access the title of the snippet within the HTML page by writing `{{.Title}}` within the template.
+	* Here's the created `view.html` page:
+
+	``````html title:ui/html/pages/view.html
+{{define "title"}}Snippet #{{.ID}}{{end}}
+{{define "main"}}
+	<div class='snippet'>
+		<div class='metadata'>
+			<strong>{{.Title}}</strong>
+			<span>#{{.ID}}</span>
+		</div>
+		<pre><code>{{.Content}}</code></pre>
+		<div class='metadata'>
+			<time>Created: {{.Created}}</time>
+			<time>Expires: {{.Expires}}</time>
+		</div>
+	</div>
+{{end}}
+``````
+
+	* Something important to acknowledge and understand is that Go's `html/template` package only allows you to pass in one and only one item of dynamic data when rendering dynamic data.
+	* Often we need to render multiple pieces of dynamic data on the same page.
+	* An easy 'work around' to achieve this is to wrap all of your dynamic data in a single struct which acts as a holding structure for your data.
+	* Here's an example of that holding data struct:
+	
+	``````go title:cmd/web/templates.go
+package main
+import "snippetbox.alexedwards.net/internal/models"
+// Define a templateData type to act as the holding structure for
+// any dynamic data that we want to pass to our HTML templates.
+// At the moment it only contains one field, but we'll add more
+// to it as the build progresses.
+type templateData struct {
+	Snippet *models.Snippet
+}
+``````
+
+	* The function `snippetView` is already using this struct in the above example.
+	* Now our data is contained in a `models/Snippet` struct *within* a `templateData` struct. We're now only passing one piece of data into the template; just a complex data structure.
+	* To access the fields in the template, we need to traverse the field tree when post-fixing the dot:
+
+	``````html title:ui/html/pages/view.html
+{{define "title"}}Snippet #{{.Snippet.ID}}{{end}}
+{{define "main"}}
+	<div class='snippet'>
+		<div class='metadata'>
+			<strong>{{.Snippet.Title}}</strong>
+			<span>#{{.Snippet.ID}}</span>
+		</div>
+		<pre><code>{{.Snippet.Content}}</code></pre>
+		<div class='metadata'>
+			<time>Created: {{.Snippet.Created}}</time>
+			<time>Expires: {{.Snippet.Expires}}</time>
+		</div>
+	</div>
+{{end}}
+``````
+
+* Additional Info about templates
+	* Content Escaping
+		* The `html/template` package automatically escapes any data that is rendered between `{{ }}`
+		* This is very helpful in avoiding Cross-Site scripting attacks (XSS).
+		* ^ It wont render and interpolate any external code on the web pages.
+	* Nested Templates
+		* When invoking one template from another, it's important that the dot needs to be explicitly passed in to the template being invoked.
+		* You do this by including it at the end of each `{{template}}` or `{{block}}` like so:
+		
+	``````html title:example.html
+{{template "main" .}}
+{{block "sidebar" .}}{{end}}
+``````
+
+	* Calling methods
+		* If the type that's being yielded/rendered between the `{{ }}` tags has a method against it, you can call these methods in the templates.
+		* ^ As long as they are exported and return a single value.
+		* For example, `.Snippet.Created` is a `time.Time` object which has multiple methods against it, one of these methods is `Weekday()`
+		* You would call it in the template like this:
+		* `<span>{{.Snippet.Created.Weekday}}</span>`
+		* You can also pass parameters to methods like so:
+		* `<span>{{.Snippet.Created.AddDate 0 6 0}}</span>`
+		* Methods called in the template dont require parenthesis and parameters passed in are delimited by single white space.
+
+
